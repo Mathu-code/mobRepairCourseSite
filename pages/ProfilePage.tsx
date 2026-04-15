@@ -1,21 +1,357 @@
-import { Link } from 'react-router-dom';
 import { User, Lock, CreditCard, Download } from 'lucide-react';
 import { Header } from '../components/Header';
 import { useAuth } from '../context/AuthContext';
+import { useEffect, useMemo, useState } from 'react';
+import { apiUrl } from '../lib/api';
+import { jsPDF } from 'jspdf';
 
-const paymentHistory = [
-  { id: '1', item: 'Complete iPhone Repair Mastery Course', amount: 89.99, date: 'Nov 20, 2025', status: 'Completed' },
-  { id: '2', item: 'iPhone Repair Guide - All Models', amount: 24.99, date: 'Nov 15, 2025', status: 'Completed' },
-  { id: '3', item: 'Screen Replacement Toolkit Guide', amount: 19.99, date: 'Nov 10, 2025', status: 'Completed' },
-];
+type PaymentHistoryEntry = {
+  id: string;
+  itemId: string;
+  itemType: 'course' | 'note';
+  itemTitle: string;
+  amount: number;
+  status: string;
+  paymentMethod?: string;
+  createdAt?: string;
+  invoiceNumber?: string;
+};
 
 export function ProfilePage() {
-  const { user } = useAuth();
+  const { user, logout, refreshUser } = useAuth();
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [loadingPayments, setLoadingPayments] = useState(true);
+  const [profileMessage, setProfileMessage] = useState('');
+  const [passwordMessage, setPasswordMessage] = useState('');
+  const [deleteMessage, setDeleteMessage] = useState('');
+  const [profileError, setProfileError] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
 
-  const firstName = user?.firstName || '';
-  const lastName = user?.lastName || '';
+  const [profileForm, setProfileForm] = useState({
+    firstName: '',
+    lastName: '',
+    email: '',
+    phone: '',
+    bio: ''
+  });
+
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmNewPassword: ''
+  });
+
+  const [deleteForm, setDeleteForm] = useState({
+    currentPassword: ''
+  });
+
+  const [paymentHistory, setPaymentHistory] = useState<PaymentHistoryEntry[]>([]);
+  const [submittingProfile, setSubmittingProfile] = useState(false);
+  const [submittingPassword, setSubmittingPassword] = useState(false);
+  const [submittingDelete, setSubmittingDelete] = useState(false);
+
+  const token = localStorage.getItem('token');
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      if (!user?.id || !token) {
+        setLoadingProfile(false);
+        return;
+      }
+
+      try {
+        const res = await fetch(apiUrl('/api/auth/me'), {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json().catch(() => ({}));
+
+        if (!res.ok || !json?.success || !json?.data) {
+          throw new Error(json?.message || 'Failed to load profile');
+        }
+
+        const profile = json.data;
+        setProfileForm({
+          firstName: String(profile?.firstName || ''),
+          lastName: String(profile?.lastName || ''),
+          email: String(profile?.email || ''),
+          phone: String(profile?.phone || ''),
+          bio: String(profile?.bio || '')
+        });
+      } catch (error: any) {
+        setProfileError(error?.message || 'Failed to load profile');
+      } finally {
+        setLoadingProfile(false);
+      }
+    };
+
+    loadProfile();
+  }, [token, user?.id]);
+
+  useEffect(() => {
+    const loadPayments = async () => {
+      if (!user?.id || !token) {
+        setLoadingPayments(false);
+        return;
+      }
+
+      try {
+        const res = await fetch(apiUrl(`/api/users/${user.id}/purchases`), {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        const json = await res.json().catch(() => ({}));
+
+        if (!res.ok || !json?.success) {
+          throw new Error(json?.message || 'Failed to load payment history');
+        }
+
+        const entries: PaymentHistoryEntry[] = (json?.data || []).map((entry: any) => ({
+          id: String(entry?.id || entry?._id || ''),
+          itemId: String(entry?.itemId || ''),
+          itemType: String(entry?.itemType || 'course') === 'note' ? 'note' : 'course',
+          itemTitle: String(entry?.itemTitle || 'Purchased item'),
+          amount: Number(entry?.amount || 0),
+          status: String(entry?.status || 'Completed'),
+          paymentMethod: String(entry?.paymentMethod || ''),
+          createdAt: entry?.createdAt,
+          invoiceNumber: String(entry?.invoiceNumber || '')
+        }));
+
+        setPaymentHistory(entries);
+      } catch (error: any) {
+        setProfileError(error?.message || 'Failed to load payment history');
+      } finally {
+        setLoadingPayments(false);
+      }
+    };
+
+    loadPayments();
+  }, [token, user?.id]);
+
+  const firstName = profileForm.firstName || user?.firstName || '';
+  const lastName = profileForm.lastName || user?.lastName || '';
   const fullName = [firstName, lastName].filter(Boolean).join(' ').trim() || user?.name || 'User';
   const initials = `${firstName.charAt(0)}${lastName.charAt(0) || (user?.email?.charAt(0) || '')}`.toUpperCase() || 'U';
+
+  const formattedPaymentHistory = useMemo(
+    () => paymentHistory.map((payment) => ({
+      ...payment,
+      dateLabel: payment.createdAt ? new Date(payment.createdAt).toLocaleDateString() : '-'
+    })),
+    [paymentHistory]
+  );
+
+  const handleProfileSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setProfileError('');
+    setProfileMessage('');
+
+    if (!token) {
+      setProfileError('You are not logged in.');
+      return;
+    }
+
+    if (!profileForm.firstName.trim() || !profileForm.email.trim()) {
+      setProfileError('First name and email are required.');
+      return;
+    }
+
+    try {
+      setSubmittingProfile(true);
+      const res = await fetch(apiUrl('/api/auth/profile'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          firstName: profileForm.firstName,
+          lastName: profileForm.lastName,
+          email: profileForm.email,
+          phone: profileForm.phone,
+          bio: profileForm.bio
+        })
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.message || 'Failed to update profile');
+      }
+
+      await refreshUser();
+      setProfileMessage('Profile updated successfully.');
+    } catch (error: any) {
+      setProfileError(error?.message || 'Failed to update profile');
+    } finally {
+      setSubmittingProfile(false);
+    }
+  };
+
+  const handlePasswordSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setPasswordError('');
+    setPasswordMessage('');
+
+    if (!token) {
+      setPasswordError('You are not logged in.');
+      return;
+    }
+
+    if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmNewPassword) {
+      setPasswordError('All password fields are required.');
+      return;
+    }
+
+    if (passwordForm.newPassword.length < 6) {
+      setPasswordError('New password must be at least 6 characters.');
+      return;
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
+      setPasswordError('New passwords do not match.');
+      return;
+    }
+
+    try {
+      setSubmittingPassword(true);
+      const res = await fetch(apiUrl('/api/auth/change-password'), {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          currentPassword: passwordForm.currentPassword,
+          newPassword: passwordForm.newPassword
+        })
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.message || 'Failed to update password');
+      }
+
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmNewPassword: '' });
+      setPasswordMessage('Password updated successfully.');
+    } catch (error: any) {
+      setPasswordError(error?.message || 'Failed to update password');
+    } finally {
+      setSubmittingPassword(false);
+    }
+  };
+
+  const handleDeleteAccount = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setDeleteError('');
+    setDeleteMessage('');
+
+    if (!token) {
+      setDeleteError('You are not logged in.');
+      return;
+    }
+
+    if (!deleteForm.currentPassword.trim()) {
+      setDeleteError('Current password is required to delete account.');
+      return;
+    }
+
+    const confirmed = window.confirm('This will permanently deactivate your account. Do you want to continue?');
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setSubmittingDelete(true);
+      const res = await fetch(apiUrl('/api/auth/account'), {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          currentPassword: deleteForm.currentPassword
+        })
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.message || 'Failed to delete account');
+      }
+
+      setDeleteMessage('Account deleted successfully. Logging out...');
+      logout();
+    } catch (error: any) {
+      setDeleteError(error?.message || 'Failed to delete account');
+    } finally {
+      setSubmittingDelete(false);
+    }
+  };
+
+  const downloadInvoice = (payment: PaymentHistoryEntry) => {
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const invoiceId = payment.invoiceNumber || `INV-${payment.id.slice(-8).toUpperCase()}`;
+    const purchaseDate = payment.createdAt ? new Date(payment.createdAt) : new Date();
+
+    doc.setFillColor(248, 250, 252);
+    doc.rect(0, 0, pageWidth, pageHeight, 'F');
+
+    doc.setFillColor(8, 145, 178);
+    doc.rect(0, 0, pageWidth, 30, 'F');
+
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text('MobRepair Invoice', 16, 18);
+
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text('Invoice Details', 16, 44);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(11);
+    doc.text(`Invoice No: ${invoiceId}`, 16, 54);
+    doc.text(`Date: ${purchaseDate.toLocaleString()}`, 16, 61);
+    doc.text(`Customer: ${fullName}`, 16, 68);
+    doc.text(`Email: ${profileForm.email || user?.email || ''}`, 16, 75);
+
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(226, 232, 240);
+    doc.roundedRect(14, 86, pageWidth - 28, 56, 3, 3, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.text('Item', 20, 98);
+    doc.text('Type', 110, 98);
+    doc.text('Amount', pageWidth - 20, 98, { align: 'right' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.text(payment.itemTitle, 20, 109, { maxWidth: 82 });
+    doc.text(payment.itemType === 'note' ? 'Guide' : 'Course', 110, 109);
+    doc.text(`$${Number(payment.amount || 0).toFixed(2)}`, pageWidth - 20, 109, { align: 'right' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(13);
+    doc.text('Total Paid', 20, 132);
+    doc.text(`$${Number(payment.amount || 0).toFixed(2)}`, pageWidth - 20, 132, { align: 'right' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(100, 116, 139);
+    doc.text('Thank you for your purchase.', 14, pageHeight - 12);
+
+    doc.save(`invoice-${invoiceId}.pdf`);
+  };
+
+  if (loadingProfile) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
+        <Header />
+        <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">Loading profile...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
@@ -60,13 +396,14 @@ export function ProfilePage() {
             {/* Personal Information */}
             <div id="personal" className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
               <h2 className="text-2xl font-bold mb-6 text-slate-900">Personal Information</h2>
-              <form className="space-y-6">
+              <form className="space-y-6" onSubmit={handleProfileSubmit}>
                 <div className="grid md:grid-cols-2 gap-6">
                   <div>
                     <label className="block mb-2 font-medium text-slate-700">First Name</label>
                     <input
                       type="text"
-                      defaultValue={firstName}
+                      value={profileForm.firstName}
+                      onChange={(event) => setProfileForm((current) => ({ ...current, firstName: event.target.value }))}
                       className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                     />
                   </div>
@@ -74,7 +411,8 @@ export function ProfilePage() {
                     <label className="block mb-2 font-medium text-slate-700">Last Name</label>
                     <input
                       type="text"
-                      defaultValue={lastName}
+                      value={profileForm.lastName}
+                      onChange={(event) => setProfileForm((current) => ({ ...current, lastName: event.target.value }))}
                       className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                     />
                   </div>
@@ -84,7 +422,8 @@ export function ProfilePage() {
                   <label className="block mb-2 font-medium text-slate-700">Email</label>
                   <input
                     type="email"
-                    defaultValue={user?.email || ''}
+                    value={profileForm.email}
+                    onChange={(event) => setProfileForm((current) => ({ ...current, email: event.target.value }))}
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                   />
                 </div>
@@ -93,7 +432,9 @@ export function ProfilePage() {
                   <label className="block mb-2 font-medium text-slate-700">Phone Number</label>
                   <input
                     type="tel"
-                    defaultValue="+1 (555) 123-4567"
+                    value={profileForm.phone}
+                    onChange={(event) => setProfileForm((current) => ({ ...current, phone: event.target.value }))}
+                    placeholder="Enter phone number"
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                   />
                 </div>
@@ -102,16 +443,22 @@ export function ProfilePage() {
                   <label className="block mb-2 font-medium text-slate-700">Bio</label>
                   <textarea
                     rows={4}
-                    defaultValue="Passionate learner exploring mobile device repair and technology"
+                    value={profileForm.bio}
+                    onChange={(event) => setProfileForm((current) => ({ ...current, bio: event.target.value }))}
+                    placeholder="Tell us about yourself"
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 resize-none transition-all"
                   ></textarea>
                 </div>
 
+                {profileError && <p className="text-sm text-red-600">{profileError}</p>}
+                {profileMessage && <p className="text-sm text-green-600">{profileMessage}</p>}
+
                 <button
                   type="submit"
+                  disabled={submittingProfile}
                   className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-cyan-500/50 hover:scale-105 transition-all font-bold"
                 >
-                  Save Changes
+                  {submittingProfile ? 'Saving...' : 'Save Changes'}
                 </button>
               </form>
             </div>
@@ -119,12 +466,14 @@ export function ProfilePage() {
             {/* Change Password */}
             <div id="password" className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
               <h2 className="text-2xl font-bold mb-6 text-slate-900">Change Password</h2>
-              <form className="space-y-6">
+              <form className="space-y-6" onSubmit={handlePasswordSubmit}>
                 <div>
                   <label className="block mb-2 font-medium text-slate-700">Current Password</label>
                   <input
                     type="password"
                     placeholder="Enter current password"
+                    value={passwordForm.currentPassword}
+                    onChange={(event) => setPasswordForm((current) => ({ ...current, currentPassword: event.target.value }))}
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                   />
                 </div>
@@ -134,6 +483,8 @@ export function ProfilePage() {
                   <input
                     type="password"
                     placeholder="Enter new password"
+                    value={passwordForm.newPassword}
+                    onChange={(event) => setPasswordForm((current) => ({ ...current, newPassword: event.target.value }))}
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                   />
                 </div>
@@ -143,15 +494,21 @@ export function ProfilePage() {
                   <input
                     type="password"
                     placeholder="Confirm new password"
+                    value={passwordForm.confirmNewPassword}
+                    onChange={(event) => setPasswordForm((current) => ({ ...current, confirmNewPassword: event.target.value }))}
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
                   />
                 </div>
 
+                {passwordError && <p className="text-sm text-red-600">{passwordError}</p>}
+                {passwordMessage && <p className="text-sm text-green-600">{passwordMessage}</p>}
+
                 <button
                   type="submit"
+                  disabled={submittingPassword}
                   className="px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-cyan-500/50 hover:scale-105 transition-all font-bold"
                 >
-                  Update Password
+                  {submittingPassword ? 'Updating...' : 'Update Password'}
                 </button>
               </form>
             </div>
@@ -171,18 +528,26 @@ export function ProfilePage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {paymentHistory.map((payment) => (
+                    {!loadingPayments && formattedPaymentHistory.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center text-slate-500">No payment history yet.</td>
+                      </tr>
+                    )}
+                    {formattedPaymentHistory.map((payment) => (
                       <tr key={payment.id} className="border-b border-slate-100 last:border-0">
-                        <td className="px-4 py-4 font-medium text-slate-900">{payment.item}</td>
-                        <td className="px-4 py-4 font-semibold text-cyan-600">${payment.amount}</td>
-                        <td className="px-4 py-4 text-slate-600">{payment.date}</td>
+                        <td className="px-4 py-4 font-medium text-slate-900">{payment.itemTitle}</td>
+                        <td className="px-4 py-4 font-semibold text-cyan-600">${Number(payment.amount).toFixed(2)}</td>
+                        <td className="px-4 py-4 text-slate-600">{payment.dateLabel}</td>
                         <td className="px-4 py-4">
                           <span className="px-3 py-1 bg-gradient-to-r from-green-100 to-emerald-100 text-green-700 rounded-full text-sm font-semibold">
                             {payment.status}
                           </span>
                         </td>
                         <td className="px-4 py-4">
-                          <button className="text-cyan-600 hover:text-cyan-700 flex items-center gap-2 font-medium transition-colors">
+                          <button
+                            onClick={() => downloadInvoice(payment)}
+                            className="text-cyan-600 hover:text-cyan-700 flex items-center gap-2 font-medium transition-colors"
+                          >
                             <Download className="w-4 h-4" />
                             <span className="text-sm">Download</span>
                           </button>
@@ -198,15 +563,33 @@ export function ProfilePage() {
             <div className="bg-white rounded-2xl shadow-xl p-8 border border-slate-200">
               <h2 className="text-2xl font-bold mb-6 text-slate-900">Account Actions</h2>
               <div className="space-y-4">
-                <div className="flex items-center justify-between p-4 border-2 border-red-200 rounded-xl bg-red-50">
+                <form onSubmit={handleDeleteAccount} className="p-4 border-2 border-red-200 rounded-xl bg-red-50 space-y-4">
                   <div>
                     <h3 className="font-bold text-slate-900 mb-1">Delete Account</h3>
-                    <p className="text-sm text-slate-600">Permanently delete your account and all data</p>
+                    <p className="text-sm text-slate-600">Permanently deactivate your account and logout from this device</p>
                   </div>
-                  <button className="px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:shadow-lg hover:scale-105 transition-all font-bold">
-                    Delete
+                  <div>
+                    <label className="block mb-2 font-medium text-slate-700">Current Password</label>
+                    <input
+                      type="password"
+                      placeholder="Enter current password"
+                      value={deleteForm.currentPassword}
+                      onChange={(event) => setDeleteForm({ currentPassword: event.target.value })}
+                      className="w-full px-4 py-3 border-2 border-red-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500 transition-all"
+                    />
+                  </div>
+
+                  {deleteError && <p className="text-sm text-red-600">{deleteError}</p>}
+                  {deleteMessage && <p className="text-sm text-green-700">{deleteMessage}</p>}
+
+                  <button
+                    type="submit"
+                    disabled={submittingDelete}
+                    className="px-4 py-2 bg-gradient-to-r from-red-500 to-red-600 text-white rounded-xl hover:shadow-lg hover:scale-105 transition-all font-bold"
+                  >
+                    {submittingDelete ? 'Deleting...' : 'Delete Account'}
                   </button>
-                </div>
+                </form>
               </div>
             </div>
           </div>

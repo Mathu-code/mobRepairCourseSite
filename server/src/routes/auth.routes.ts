@@ -164,7 +164,7 @@ router.get('/me', authenticateToken, async (req: AuthRequest, res: Response) => 
 // Update profile
 router.put('/profile', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
-    const { firstName, lastName, phone, bio, avatar } = req.body;
+    const { firstName, lastName, phone, bio, avatar, email } = req.body;
 
     const user = await User.findById(req.user?.userId);
     if (!user) {
@@ -175,11 +175,31 @@ router.put('/profile', authenticateToken, async (req: AuthRequest, res: Response
     }
 
     // Update user fields
-    if (firstName) user.firstName = firstName;
-    if (lastName) user.lastName = lastName;
+    if (firstName) user.firstName = String(firstName).trim();
+    if (lastName !== undefined) user.lastName = String(lastName || '').trim();
     if (phone !== undefined) user.phone = phone;
     if (bio !== undefined) user.bio = bio;
     if (avatar !== undefined) user.avatar = avatar;
+
+    if (email !== undefined) {
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+      if (!normalizedEmail) {
+        return res.status(400).json({
+          success: false,
+          message: 'Email is required'
+        });
+      }
+
+      const existingUser = await User.findOne({ email: normalizedEmail, _id: { $ne: user._id } });
+      if (existingUser) {
+        return res.status(409).json({
+          success: false,
+          message: 'Another account already uses this email'
+        });
+      }
+
+      user.email = normalizedEmail;
+    }
 
     await user.save();
 
@@ -193,6 +213,50 @@ router.put('/profile', authenticateToken, async (req: AuthRequest, res: Response
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to update profile'
+    });
+  }
+});
+
+// Delete current user account (self-service)
+router.delete('/account', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { currentPassword } = req.body || {};
+
+    if (!String(currentPassword || '').trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Current password is required to delete account'
+      });
+    }
+
+    const user = await User.findById(req.user?.userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    const isPasswordValid = await user.comparePassword(String(currentPassword));
+    if (!isPasswordValid) {
+      return res.status(401).json({
+        success: false,
+        message: 'Current password is incorrect'
+      });
+    }
+
+    user.isActive = false;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Account deleted successfully'
+    });
+  } catch (error: any) {
+    console.error('Delete account error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to delete account'
     });
   }
 });

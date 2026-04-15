@@ -26,6 +26,7 @@ interface AuthContextType {
     bio?: string
   ) => Promise<void>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
   isAuthenticated: boolean;
   isInstructor: boolean;
 }
@@ -157,6 +158,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     login,
     register,
     logout,
+    refreshUser: loadMe,
     isAuthenticated: !!user,
     isInstructor: user?.role === 'instructor'
   };

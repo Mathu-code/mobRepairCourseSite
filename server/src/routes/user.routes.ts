@@ -4,6 +4,7 @@ import User, { UserRole } from '../models/User';
 import Enrollment from '../models/Enrollment';
 import Purchase from '../models/Purchase';
 import Course from '../models/Course';
+import Note from '../models/Note';
 import { authenticateToken, requireAdmin, AuthRequest } from '../middleware/auth.middleware';
 
 const router = Router();
@@ -196,9 +197,44 @@ router.get('/:id/purchases', authenticateToken, async (req: AuthRequest, res: Re
 
     const purchases = await Purchase.find({ userId: id }).sort({ createdAt: -1 });
 
+    const courseIds = purchases
+      .filter((purchase) => purchase.itemType === 'course')
+      .map((purchase) => purchase.itemId);
+    const noteIds = purchases
+      .filter((purchase) => purchase.itemType === 'note')
+      .map((purchase) => purchase.itemId);
+
+    const [courses, notes] = await Promise.all([
+      courseIds.length > 0
+        ? Course.find({ _id: { $in: courseIds } }, { title: 1 })
+        : Promise.resolve([]),
+      noteIds.length > 0
+        ? Note.find({ _id: { $in: noteIds } }, { title: 1 })
+        : Promise.resolve([])
+    ]);
+
+    const courseTitleById = new Map(courses.map((course: any) => [String(course._id), course.title || 'Untitled course']));
+    const noteTitleById = new Map(notes.map((note: any) => [String(note._id), note.title || 'Untitled note']));
+
+    const enrichedPurchases = purchases.map((purchase: any) => {
+      const itemId = String(purchase.itemId || '');
+      const itemTitle = purchase.itemType === 'course'
+        ? (courseTitleById.get(itemId) || 'Course')
+        : (noteTitleById.get(itemId) || 'Note');
+
+      return {
+        ...purchase.toObject(),
+        id: String(purchase._id || ''),
+        itemId,
+        itemTitle,
+        status: 'Completed',
+        invoiceNumber: String(purchase.transactionId || '').trim() || `INV-${String(purchase._id || '').slice(-8).toUpperCase()}`
+      };
+    });
+
     res.json({
       success: true,
-      data: purchases
+      data: enrichedPurchases
     });
   } catch (error: any) {
     console.error('Get purchases error:', error);
