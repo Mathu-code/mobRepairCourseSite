@@ -50,6 +50,7 @@ export function ProfilePage() {
   const [submittingProfile, setSubmittingProfile] = useState(false);
   const [submittingPassword, setSubmittingPassword] = useState(false);
   const [submittingDelete, setSubmittingDelete] = useState(false);
+  const [clearingPaymentIds, setClearingPaymentIds] = useState<Set<string>>(new Set());
 
   const token = localStorage.getItem('token');
 
@@ -344,6 +345,48 @@ export function ProfilePage() {
     doc.save(`invoice-${invoiceId}.pdf`);
   };
 
+  const handleClearPayment = async (paymentId: string) => {
+    setProfileError('');
+    setProfileMessage('');
+
+    if (!user?.id || !token) {
+      setProfileError('You are not logged in.');
+      return;
+    }
+
+    const confirmed = window.confirm('Remove this payment entry from your history?');
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      setClearingPaymentIds((current) => new Set([...current, paymentId]));
+
+      const res = await fetch(apiUrl(`/api/users/${user.id}/purchases/${paymentId}`), {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success) {
+        throw new Error(json?.message || 'Failed to clear payment entry');
+      }
+
+      setPaymentHistory((current) => current.filter((entry) => entry.id !== paymentId));
+      setProfileMessage('Payment entry cleared.');
+    } catch (error: any) {
+      setProfileError(error?.message || 'Failed to clear payment entry');
+    } finally {
+      setClearingPaymentIds((current) => {
+        const next = new Set(current);
+        next.delete(paymentId);
+        return next;
+      });
+    }
+  };
+
   if (loadingProfile) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
@@ -544,13 +587,22 @@ export function ProfilePage() {
                           </span>
                         </td>
                         <td className="px-4 py-4">
-                          <button
-                            onClick={() => downloadInvoice(payment)}
-                            className="text-cyan-600 hover:text-cyan-700 flex items-center gap-2 font-medium transition-colors"
-                          >
-                            <Download className="w-4 h-4" />
-                            <span className="text-sm">Download</span>
-                          </button>
+                          <div className="flex items-center gap-3">
+                            <button
+                              onClick={() => downloadInvoice(payment)}
+                              className="text-cyan-600 hover:text-cyan-700 flex items-center gap-2 font-medium transition-colors"
+                            >
+                              <Download className="w-4 h-4" />
+                              <span className="text-sm">Download</span>
+                            </button>
+                            <button
+                              onClick={() => handleClearPayment(payment.id)}
+                              disabled={clearingPaymentIds.has(payment.id)}
+                              className="text-red-600 hover:text-red-700 text-sm font-medium transition-colors disabled:opacity-60"
+                            >
+                              {clearingPaymentIds.has(payment.id) ? 'Clearing...' : 'Clear'}
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     ))}

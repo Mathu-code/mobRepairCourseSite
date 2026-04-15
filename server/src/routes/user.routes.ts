@@ -245,6 +245,49 @@ router.get('/:id/purchases', authenticateToken, async (req: AuthRequest, res: Re
   }
 });
 
+// Delete a specific purchase from user's payment history
+router.delete('/:id/purchases/:purchaseId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const { id, purchaseId } = req.params;
+
+    // Only allow users to manage their own purchases or admin
+    if (req.user?.userId !== id && req.user?.role !== UserRole.ADMIN) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to modify this purchase history'
+      });
+    }
+
+    if (!isValidObjectId(id) || !isValidObjectId(purchaseId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid user or purchase id'
+      });
+    }
+
+    const purchase = await Purchase.findOne({ _id: purchaseId, userId: id });
+    if (!purchase) {
+      return res.status(404).json({
+        success: false,
+        message: 'Purchase not found'
+      });
+    }
+
+    await Purchase.deleteOne({ _id: purchaseId, userId: id });
+
+    res.json({
+      success: true,
+      message: 'Payment entry cleared successfully'
+    });
+  } catch (error: any) {
+    console.error('Delete purchase error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to clear payment entry'
+    });
+  }
+});
+
 // Update user (admin only)
 router.put('/:id', authenticateToken, requireAdmin, async (req: AuthRequest, res: Response) => {
   try {
