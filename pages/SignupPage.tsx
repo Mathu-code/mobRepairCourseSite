@@ -1,10 +1,9 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { User, Mail, Lock, Phone, GraduationCap, Users } from 'lucide-react';
+import { User, Mail, Lock, Phone } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export function SignupPage() {
-  const [userType, setUserType] = useState<'student' | 'instructor'>('student');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
@@ -22,7 +21,7 @@ export function SignupPage() {
     setIsSubmitting(true);
 
     try {
-      await register(firstName, lastName, email, password, userType, phone, bio);
+      await register(firstName, lastName, email, password, 'student', phone, bio);
       // After creating an account, navigate to login for explicit sign-in
       navigate('/login');
     } catch (err: any) {
@@ -51,34 +50,8 @@ export function SignupPage() {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          <div>
-            <label className="block text-sm mb-2">Account Type</label>
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setUserType('student')}
-                className={`py-3 px-4 rounded-xl border-2 transition-all font-semibold flex items-center justify-center gap-2 ${
-                  userType === 'student'
-                    ? 'border-cyan-600 bg-gradient-to-br from-cyan-50 to-blue-50 text-cyan-600'
-                    : 'border-slate-300 hover:border-slate-400 text-slate-700'
-                }`}
-              >
-                <Users className="w-5 h-5" />
-                Student
-              </button>
-              <button
-                type="button"
-                onClick={() => setUserType('instructor')}
-                className={`py-3 px-4 rounded-xl border-2 transition-all font-semibold flex items-center justify-center gap-2 ${
-                  userType === 'instructor'
-                    ? 'border-cyan-600 bg-gradient-to-br from-cyan-50 to-blue-50 text-cyan-600'
-                    : 'border-slate-300 hover:border-slate-400 text-slate-700'
-                }`}
-              >
-                <GraduationCap className="w-5 h-5" />
-                Instructor
-              </button>
-            </div>
+          <div className="rounded-xl border border-cyan-200 bg-cyan-50 px-4 py-3 text-sm text-cyan-800">
+            New accounts are created as student accounts.
           </div>
 
           <div>
