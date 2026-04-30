@@ -160,7 +160,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout,
     refreshUser: loadMe,
     isAuthenticated: !!user,
-    isInstructor: user?.role === 'instructor'
+    isInstructor: user?.role === 'instructor' || user?.role === 'admin'
   };
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

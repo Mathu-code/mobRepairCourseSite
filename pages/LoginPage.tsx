@@ -29,10 +29,8 @@ export function LoginPage() {
         throw new Error('This account is an instructor account. Please choose Instructor to sign in.');
       }
 
-      if (loggedInUser?.role === 'instructor') {
+      if (loggedInUser?.role === 'instructor' || loggedInUser?.role === 'admin') {
         navigate('/instructor/dashboard');
-      } else if (loggedInUser?.role === 'admin') {
-        navigate('/admin/dashboard');
       } else {
         navigate('/student/dashboard');
       }

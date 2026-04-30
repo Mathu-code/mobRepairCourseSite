@@ -14,9 +14,9 @@ export function ProtectedRoute({ children, requireInstructor = false, requireStu
     return <div className="p-6 text-slate-600">Restoring session...</div>;
   }
 
-  // For student-only routes: allow non-authenticated OR student users, but block instructors
+  // For student-only routes: allow non-authenticated users, students, and instructors
   if (requireStudent) {
-    if (isAuthenticated && user?.role === 'instructor') {
+    if (isAuthenticated && user?.role === 'admin') {
       return <Navigate to="/instructor/dashboard" replace />;
     }
     // Allow non-authenticated users and students to proceed

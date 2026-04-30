@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { LandingPage } from './pages/LandingPage';
@@ -14,7 +14,6 @@ import { StudentDashboard } from './pages/StudentDashboard';
 import { InstructorDashboard } from './pages/InstructorDashboard';
 import { UploadCoursePage } from './pages/UploadCoursePage';
 import { UploadNotesPage } from './pages/UploadNotesPage';
-import { AdminDashboard } from './pages/AdminDashboard';
 import { ProfilePage } from './pages/ProfilePage';
 import { CheckoutPage } from './pages/CheckoutPage';
 import { OrderSuccessPage } from './pages/OrderSuccessPage';
@@ -79,7 +78,7 @@ export default function App() {
               <UploadNotesPage />
             </ProtectedRoute>
           } />
-          <Route path="/admin/dashboard" element={<AdminDashboard />} />
+          <Route path="/admin/dashboard" element={<Navigate to="/instructor/dashboard" replace />} />
           <Route path="/profile" element={
             <ProtectedRoute>
               <ProfilePage />
