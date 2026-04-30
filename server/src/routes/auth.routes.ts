@@ -1,8 +1,52 @@
 import { Router, Request, Response } from 'express';
+import bcrypt from 'bcryptjs';
+import { randomInt } from 'crypto';
+import nodemailer from 'nodemailer';
 import User, { UserRole } from '../models/User';
 import { generateToken, authenticateToken, AuthRequest } from '../middleware/auth.middleware';
 
 const router = Router();
+
+const RESET_CODE_TTL_MINUTES = 15;
+
+const generateResetCode = (): string => randomInt(100000, 1000000).toString();
+
+const mailTransport = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT || 587),
+  secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+  auth: process.env.SMTP_USER && process.env.SMTP_PASS
+    ? {
+        user: process.env.SMTP_USER,
+        pass: process.env.SMTP_PASS
+      }
+    : undefined
+});
+
+const sendVerificationCodeEmail = async (toEmail: string, verificationCode: string): Promise<void> => {
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER;
+  const appName = process.env.APP_NAME || 'MobRepairHouse';
+
+  if (!process.env.SMTP_HOST || !process.env.SMTP_USER || !process.env.SMTP_PASS || !fromEmail) {
+    throw new Error('Email delivery is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, and SMTP_FROM in server/.env');
+  }
+
+  await mailTransport.sendMail({
+    from: `${appName} <${fromEmail}>`,
+    to: toEmail,
+    subject: `${appName} password reset verification code`,
+    text: `Your verification code is ${verificationCode}. It expires in ${RESET_CODE_TTL_MINUTES} minutes. If you did not request this, you can ignore this email.`,
+    html: `
+      <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.5;">
+        <h2 style="margin: 0 0 16px;">Password reset verification code</h2>
+        <p style="margin: 0 0 12px;">Use the following code to reset your password:</p>
+        <div style="display: inline-block; padding: 16px 20px; border-radius: 12px; background: #eff6ff; border: 1px solid #bfdbfe; font-size: 28px; letter-spacing: 0.35em; font-weight: 700;">${verificationCode}</div>
+        <p style="margin: 16px 0 0;">This code expires in ${RESET_CODE_TTL_MINUTES} minutes.</p>
+        <p style="margin: 8px 0 0; color: #475569;">If you did not request a password reset, you can ignore this email.</p>
+      </div>
+    `
+  });
+};
 
 // Register a new student
 router.post('/register', async (req: Request, res: Response) => {
@@ -307,10 +351,10 @@ router.put('/change-password', authenticateToken, async (req: AuthRequest, res: 
   }
 });
 
-// Forgot password (simplified - just validates email exists)
+// Forgot password: generate and store a verification code.
 router.post('/forgot-password', async (req: Request, res: Response) => {
   try {
-    const { email } = req.body;
+    const email = (req.body?.email || '').toString().trim().toLowerCase();
 
     if (!email) {
       return res.status(400).json({
@@ -320,17 +364,103 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     }
 
     const user = await User.findOne({ email });
-    
+
+    if (user) {
+      const verificationCode = generateResetCode();
+      const passwordResetCodeHash = await bcrypt.hash(verificationCode, 10);
+
+      user.passwordResetCodeHash = passwordResetCodeHash;
+      user.passwordResetCodeExpiresAt = new Date(Date.now() + RESET_CODE_TTL_MINUTES * 60 * 1000);
+      user.passwordResetCodeRequestedAt = new Date();
+      await user.save();
+
+      try {
+        await sendVerificationCodeEmail(email, verificationCode);
+      } catch (mailError) {
+        user.passwordResetCodeHash = null;
+        user.passwordResetCodeExpiresAt = null;
+        user.passwordResetCodeRequestedAt = null;
+        await user.save();
+        throw mailError;
+      }
+
+      return res.json({
+        success: true,
+        message: 'If an account exists with this email, a verification code has been sent'
+      });
+    }
+
     // Don't reveal if user exists or not for security
     res.json({
       success: true,
-      message: 'If an account exists with this email, a reset link will be sent'
+      message: 'If an account exists with this email, a verification code has been sent'
     });
   } catch (error: any) {
     console.error('Forgot password error:', error);
     res.status(500).json({
       success: false,
       message: error.message || 'Failed to process request'
+    });
+  }
+});
+
+// Reset password using a verification code.
+router.post('/reset-password', async (req: Request, res: Response) => {
+  try {
+    const email = (req.body?.email || '').toString().trim().toLowerCase();
+    const code = (req.body?.code || '').toString().trim();
+    const newPassword = (req.body?.newPassword || '').toString();
+
+    if (!email || !code || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: 'Email, verification code, and new password are required'
+      });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user || !user.passwordResetCodeHash || !user.passwordResetCodeExpiresAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid or expired verification code'
+      });
+    }
+
+    if (user.passwordResetCodeExpiresAt.getTime() < Date.now()) {
+      user.passwordResetCodeHash = null;
+      user.passwordResetCodeExpiresAt = null;
+      user.passwordResetCodeRequestedAt = null;
+      await user.save();
+
+      return res.status(400).json({
+        success: false,
+        message: 'Verification code has expired. Please request a new code.'
+      });
+    }
+
+    const isCodeValid = await bcrypt.compare(code, user.passwordResetCodeHash);
+    if (!isCodeValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid verification code'
+      });
+    }
+
+    user.password = newPassword;
+    user.passwordResetCodeHash = null;
+    user.passwordResetCodeExpiresAt = null;
+    user.passwordResetCodeRequestedAt = null;
+    await user.save();
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully'
+    });
+  } catch (error: any) {
+    console.error('Reset password error:', error);
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to reset password'
     });
   }
 });
