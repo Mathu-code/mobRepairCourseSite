@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Mail, Lock, Smartphone, GraduationCap, Users } from 'lucide-react';
 import { ImageWithFallback } from '../components/figma/ImageWithFallback';
@@ -10,8 +10,22 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const { login } = useAuth();
+  const { login, isAuthenticated, user, authLoading } = useAuth();
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!authLoading && isAuthenticated) {
+      if (user?.role === 'student') {
+        navigate('/student/dashboard', { replace: true });
+      } else {
+        navigate('/instructor/dashboard', { replace: true });
+      }
+    }
+  }, [authLoading, isAuthenticated, navigate, user?.role]);
+
+  if (authLoading || isAuthenticated) {
+    return <div className="min-h-screen flex items-center justify-center text-slate-600">Loading...</div>;
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
