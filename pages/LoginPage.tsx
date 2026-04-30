@@ -148,12 +148,14 @@ export function LoginPage() {
               </button>
             </form>
 
-            <p className="text-center mt-8 text-slate-600">
-              Don't have an account?{' '}
-              <Link to="/signup" className="text-cyan-600 hover:text-cyan-700 font-semibold">
-                Create account
-              </Link>
-            </p>
+            {loginType === 'student' && (
+              <p className="text-center mt-8 text-slate-600">
+                Don't have an account?{' '}
+                <Link to="/signup" className="text-cyan-600 hover:text-cyan-700 font-semibold">
+                  Create account
+                </Link>
+              </p>
+            )}
           </div>
 
           {/* Right - Illustration */}

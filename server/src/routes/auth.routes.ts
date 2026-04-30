@@ -377,11 +377,16 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       try {
         await sendVerificationCodeEmail(email, verificationCode);
       } catch (mailError) {
+        console.error('Failed to send verification email:', mailError);
         user.passwordResetCodeHash = null;
         user.passwordResetCodeExpiresAt = null;
         user.passwordResetCodeRequestedAt = null;
         await user.save();
-        throw mailError;
+
+        return res.status(502).json({
+          success: false,
+          message: 'Failed to deliver verification email. Check SMTP configuration and credentials.'
+        });
       }
 
       return res.json({
