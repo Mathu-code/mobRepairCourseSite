@@ -37,16 +37,11 @@ router.get('/:id/dashboard', authenticateToken, async (req: AuthRequest, res: Re
       totalStudents = uniqueUserIds.size;
     }
 
-    // Revenue: sum purchases for courseIds and noteIds
-    let totalEarnings = 0;
-    const purchases = await Purchase.find({
-      $or: [
-        { itemType: 'course', itemId: { $in: courseIds } },
-        { itemType: 'note', itemId: { $in: noteIds } }
-      ]
-    }).sort({ createdAt: -1 }).limit(20);
+    const purchases = await Purchase.find({ instructorId: id, paymentStatus: 'paid' })
+      .sort({ createdAt: -1 })
+      .limit(20);
 
-    totalEarnings = purchases.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0);
+    const totalEarnings = purchases.reduce((sum: number, p: any) => sum + Number(p.instructorEarnings ?? p.amount ?? 0), 0);
 
     // Attach purchaser info for recent purchases
     const recentPurchases = await Promise.all(purchases.map(async (p: any) => {
@@ -57,6 +52,8 @@ router.get('/:id/dashboard', authenticateToken, async (req: AuthRequest, res: Re
         itemType: p.itemType,
         itemId: p.itemId,
         amount: Number(p.amount || 0),
+        instructorEarnings: Number(p.instructorEarnings ?? p.amount ?? 0),
+        paymentMethod: p.paymentMethod,
         date: p.createdAt
       };
     }));

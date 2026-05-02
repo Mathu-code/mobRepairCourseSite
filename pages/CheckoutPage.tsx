@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Elements, CardElement, useElements, useStripe } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { Smartphone, CreditCard, FileText, ShieldCheck, Lock } from 'lucide-react';
@@ -125,6 +125,7 @@ export function CheckoutPage() {
 
 function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProps) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const stripe = useStripe();
   const elements = useElements();
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
@@ -134,6 +135,7 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
   const [creatingIntent, setCreatingIntent] = useState(false);
   const [loadingProfile, setLoadingProfile] = useState(true);
   const [serverStripeEnabled, setServerStripeEnabled] = useState<boolean | null>(null);
+  const [serverPaypalEnabled, setServerPaypalEnabled] = useState<boolean | null>(null);
   const [couponInput, setCouponInput] = useState('');
   const [appliedCouponCode, setAppliedCouponCode] = useState('');
   const [appliedCouponPercent, setAppliedCouponPercent] = useState(0);
@@ -144,6 +146,9 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
   const [email, setEmail] = useState('');
   const [country, setCountry] = useState('');
   const [paypalEmail, setPaypalEmail] = useState('');
+  const [paypalRedirecting, setPaypalRedirecting] = useState(false);
+  const [capturingPaypal, setCapturingPaypal] = useState(false);
+  const paypalToken = searchParams.get('token') || searchParams.get('paypalOrderId') || '';
 
   const generatedCoupon = useMemo(() => {
     if (itemData.itemType === 'course' && itemData.courseId) {
@@ -260,18 +265,89 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
         const res = await fetch(apiUrl('/api/payments/config'));
         const json = await res.json().catch(() => ({}));
         const enabled = !!json?.data?.stripeEnabled;
+        const paypalEnabled = !!json?.data?.paypalEnabled;
         setServerStripeEnabled(enabled);
-        if (!enabled) {
+        setServerPaypalEnabled(paypalEnabled);
+        if (!enabled && paypalEnabled) {
           setPaymentMethod('paypal');
         }
       } catch {
         setServerStripeEnabled(false);
+        setServerPaypalEnabled(false);
         setPaymentMethod('paypal');
       }
     };
 
     checkStripeConfig();
   }, []);
+
+  useEffect(() => {
+    const capturePayPalOrder = async () => {
+      if (!paypalToken || capturingPaypal) {
+        return;
+      }
+
+      try {
+        setCapturingPaypal(true);
+        setPaymentMethod('paypal');
+        setPaymentError('');
+
+        const token = localStorage.getItem('token');
+        if (!token) {
+          throw new Error('Please sign in before completing payment.');
+        }
+
+        const res = await fetch(apiUrl('/api/payments/paypal/capture-order'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            orderId: paypalToken,
+            itemType: itemData.itemType,
+            itemId: itemData.courseId || itemData.noteId || id,
+            couponCode: appliedCouponCode || undefined,
+            firstName,
+            lastName,
+            email,
+            country,
+            paypalEmail
+          })
+        });
+
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json?.success || !json?.data) {
+          throw new Error(json?.message || 'Failed to capture PayPal payment');
+        }
+
+        const order = {
+          orderNumber: json.data.orderNumber || `ORD-${new Date().getFullYear()}-${Math.floor(Math.random() * 9000 + 1000)}`,
+          date: new Date().toISOString(),
+          paymentMethod: json.data.paymentMethod || 'PayPal',
+          totalPaid: total,
+          itemTitle: itemData.title,
+          itemType: itemData.itemType,
+          courseId: json.data.courseId || itemData.courseId || '',
+          noteId: json.data.noteId || itemData.noteId || '',
+          email: json.data.email || email,
+          customerName: json.data.customerName || `${firstName} ${lastName}`.trim(),
+          country: json.data.country || country,
+          paymentProvider: 'paypal',
+          transactionId: json.data.transactionId || paypalToken
+        };
+
+        localStorage.setItem('lastOrder', JSON.stringify(order));
+        navigate('/order-success', { state: order, replace: true });
+      } catch (error: any) {
+        setPaymentError(error?.message || 'Failed to capture PayPal payment');
+      } finally {
+        setCapturingPaypal(false);
+      }
+    };
+
+    capturePayPalOrder();
+  }, [appliedCouponCode, capturingPaypal, country, email, firstName, id, itemData.courseId, itemData.itemType, itemData.noteId, itemData.title, lastName, navigate, paypalEmail, paypalToken, total]);
 
   useEffect(() => {
     const createIntent = async () => {
@@ -324,6 +400,44 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
     createIntent();
   }, [id, itemData.courseId, itemData.itemType, itemData.noteId, paymentMethod, serverStripeEnabled, stripeDisabled, appliedCouponCode]);
 
+  const startPayPalCheckout = async () => {
+    const token = localStorage.getItem('token');
+    if (!token) {
+      setPaymentError('Please sign in before completing payment.');
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+      setPaypalRedirecting(true);
+      setPaymentError('');
+
+      const res = await fetch(apiUrl('/api/payments/paypal/create-order'), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          itemType: itemData.itemType,
+          itemId: itemData.courseId || itemData.noteId || id,
+          couponCode: appliedCouponCode || undefined
+        })
+      });
+
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || !json?.success || !json?.data?.approveUrl) {
+        throw new Error(json?.message || 'Failed to start PayPal checkout');
+      }
+
+      window.location.href = json.data.approveUrl;
+    } catch (error: any) {
+      setPaymentError(error?.message || 'Failed to start PayPal checkout');
+      setPaypalRedirecting(false);
+      setSubmitting(false);
+    }
+  };
+
   const completePayment = async () => {
     if (!firstName.trim() || !lastName.trim() || !email.trim()) {
       setPaymentError('Enter your billing details.');
@@ -341,12 +455,17 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
       return;
     }
 
+    if (paymentMethod === 'paypal') {
+      await startPayPalCheckout();
+      return;
+    }
+
     try {
       setSubmitting(true);
       setPaymentError('');
 
       let paymentIntentId = '';
-      let paymentLabel = paymentMethod === 'paypal' ? `PayPal (${paypalEmail})` : 'Credit Card';
+      let paymentLabel = 'Credit Card';
 
       if (paymentMethod === 'card') {
         if (!stripe || !elements) {
@@ -541,11 +660,12 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
                   </div>
                 )}
 
-                <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${paymentMethod === 'paypal' ? 'border-cyan-600 bg-gradient-to-br from-cyan-50 to-blue-50 shadow-md' : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50'}`}>
+                <label className={`flex items-center gap-3 p-4 border-2 rounded-xl cursor-pointer transition-all ${paymentMethod === 'paypal' ? 'border-cyan-600 bg-gradient-to-br from-cyan-50 to-blue-50 shadow-md' : 'border-slate-300 hover:border-slate-400 hover:bg-slate-50'} ${serverPaypalEnabled === false ? 'opacity-60' : ''}`}>
                   <input
                     type="radio"
                     name="payment"
                     checked={paymentMethod === 'paypal'}
+                    disabled={serverPaypalEnabled === false}
                     onChange={() => setPaymentMethod('paypal')}
                     className="w-5 h-5"
                   />
@@ -556,6 +676,12 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
                   </svg>
                   <span>PayPal</span>
                 </label>
+
+                {serverPaypalEnabled === false && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-800">
+                    PayPal is unavailable until PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are configured on the server.
+                  </div>
+                )}
               </div>
 
               {paymentMethod === 'card' ? (
@@ -586,18 +712,11 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
                 </div>
               ) : (
                 <div className="rounded-2xl border-2 border-slate-200 bg-slate-50 p-5 space-y-4">
-                  <div>
-                    <label className="block mb-2 font-semibold text-slate-700">PayPal Email</label>
-                    <input
-                      type="email"
-                      placeholder="you@example.com"
-                      value={paypalEmail}
-                      onChange={(e) => setPaypalEmail(e.target.value)}
-                      className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition-all"
-                    />
-                  </div>
                   <p className="text-sm text-slate-600">
-                    PayPal is still confirmed through the backend order flow.
+                    You will be redirected to PayPal to approve the payment securely.
+                  </p>
+                  <p className="text-sm text-slate-600">
+                    After approval, you will return here automatically and the order will complete.
                   </p>
                 </div>
               )}
@@ -680,10 +799,10 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
 
               <button
                 onClick={completePayment}
-                disabled={loadingProfile || submitting || creatingIntent || (paymentMethod === 'card' && !clientSecret)}
+                disabled={loadingProfile || submitting || creatingIntent || paypalRedirecting || capturingPaypal || (paymentMethod === 'card' && !clientSecret)}
                 className="w-full py-4 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-cyan-500/50 hover:scale-105 transition-all text-center block mb-6 font-bold text-lg disabled:opacity-60 disabled:cursor-not-allowed"
               >
-                {loadingProfile ? 'Loading profile...' : submitting ? 'Processing...' : paymentMethod === 'paypal' ? 'Continue to PayPal' : 'Pay with Card'}
+                {loadingProfile ? 'Loading profile...' : paypalRedirecting ? 'Redirecting to PayPal...' : capturingPaypal ? 'Completing PayPal payment...' : submitting ? 'Processing...' : paymentMethod === 'paypal' ? 'Continue to PayPal' : 'Pay with Card'}
               </button>
 
               <div className="flex items-center justify-center gap-2 text-sm text-slate-600 bg-slate-50 p-3 rounded-xl">

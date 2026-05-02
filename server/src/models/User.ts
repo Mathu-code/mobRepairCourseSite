@@ -16,6 +16,8 @@ export interface IUser extends Document {
   avatar?: string;
   phone?: string;
   bio?: string;
+  stripeAccountId?: string | null;
+  paypalEmail?: string | null;
   isActive: boolean;
   passwordResetCodeHash?: string | null;
   passwordResetCodeExpiresAt?: Date | null;
@@ -62,6 +64,14 @@ const userSchema = new Schema<IUser>(
       default: null
     },
     bio: {
+      type: String,
+      default: null
+    },
+    stripeAccountId: {
+      type: String,
+      default: null
+    },
+    paypalEmail: {
       type: String,
       default: null
     },
