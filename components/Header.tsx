@@ -3,15 +3,7 @@ import { ShoppingCart, User, BookOpen, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiUrl } from '../lib/api';
-
-type CartItem = {
-  id: string;
-  itemType: 'course' | 'note';
-  title: string;
-  price: number;
-  image?: string;
-  addedAt?: string;
-};
+import { dispatchCartUpdated, readCartItems, removeCartItem as removeCartItemFromStorage, writeCartItems } from '../lib/cart';
 
 export function Header() {
   const { user, logout } = useAuth();
@@ -29,16 +21,9 @@ export function Header() {
 
   useEffect(() => {
     const readCart = () => {
-      try {
-        const raw = localStorage.getItem('shoppingCart');
-        const items = raw ? JSON.parse(raw) : [];
-        const nextItems = Array.isArray(items) ? items : [];
-        setCartItems(nextItems);
-        setCartCount(nextItems.length);
-      } catch {
-        setCartItems([]);
-        setCartCount(0);
-      }
+      const nextItems = readCartItems(user?.id);
+      setCartItems(nextItems);
+      setCartCount(nextItems.length);
     };
 
     const onCartUpdated = (event: Event) => {
@@ -57,7 +42,7 @@ export function Header() {
       window.removeEventListener('storage', readCart);
       window.removeEventListener('cart-updated', onCartUpdated as EventListener);
     };
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => {
     const closeOnOutsideClick = (event: MouseEvent) => {
@@ -85,9 +70,7 @@ export function Header() {
   useEffect(() => {
     const pruneOwnedItemsFromCart = async () => {
       try {
-        const raw = localStorage.getItem('shoppingCart');
-        const parsed = raw ? JSON.parse(raw) : [];
-        const currentItems: CartItem[] = Array.isArray(parsed) ? parsed : [];
+        const currentItems = readCartItems(user?.id);
 
         if (!user?.id || user.role === 'instructor' || currentItems.length === 0) {
           setCartItems(currentItems);
@@ -139,7 +122,7 @@ export function Header() {
         });
 
         if (filteredItems.length !== currentItems.length) {
-          localStorage.setItem('shoppingCart', JSON.stringify(filteredItems));
+          writeCartItems(filteredItems, user?.id);
         }
 
         setCartItems(filteredItems);
@@ -162,11 +145,10 @@ export function Header() {
   }, [user?.id, user?.role]);
 
   const removeCartItem = (itemId: string, itemType: 'course' | 'note') => {
-    const nextItems = cartItems.filter((item) => !(item.id === itemId && item.itemType === itemType));
-    localStorage.setItem('shoppingCart', JSON.stringify(nextItems));
+    const nextItems = removeCartItemFromStorage(itemId, itemType, user?.id);
     setCartItems(nextItems);
     setCartCount(nextItems.length);
-    window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Removed from cart' } }));
+    dispatchCartUpdated('Removed from cart');
     setIsCartOpen(false);
     navigate('/student/dashboard');
   };

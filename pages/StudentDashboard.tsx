@@ -5,6 +5,7 @@ import { Header } from '../components/Header';
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiUrl } from '../lib/api';
+import { addCartItem, dispatchCartUpdated } from '../lib/cart';
 
 type CourseCard = {
   id: string;
@@ -200,7 +201,7 @@ export function StudentDashboard() {
 
     const cartItem = {
       id: course.id,
-      itemType: 'course',
+      itemType: 'course' as const,
       title: course.title,
       price: Number(course.price || 0),
       image: '',
@@ -208,22 +209,16 @@ export function StudentDashboard() {
     };
 
     try {
-      const raw = localStorage.getItem('shoppingCart');
-      const current = raw ? JSON.parse(raw) : [];
-      const existing = Array.isArray(current)
-        ? current.find((item: any) => item?.id === course.id && item?.itemType === 'course')
-        : null;
+      const added = addCartItem(cartItem, user?.id);
 
-      if (existing) {
-        window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Already in cart' } }));
+      if (!added) {
+        dispatchCartUpdated('Already in cart');
         return;
       }
 
-      const next = Array.isArray(current) ? [...current, cartItem] : [cartItem];
-      localStorage.setItem('shoppingCart', JSON.stringify(next));
-      window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Added to cart' } }));
+      dispatchCartUpdated('Added to cart');
     } catch {
-      window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Cart update failed' } }));
+      dispatchCartUpdated('Cart update failed');
     }
   };
 

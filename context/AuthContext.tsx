@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
 import { apiUrl } from '../lib/api';
+import { dispatchCartUpdated, syncAnonymousCartToUser } from '../lib/cart';
 
 interface User {
   id: string;
@@ -82,6 +83,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     saveToken(token);
     const userObj = parseUserFromResponse(json?.data || json);
     setUser(userObj);
+    if (userObj?.id) {
+      syncAnonymousCartToUser(userObj.id);
+      dispatchCartUpdated('Cart synced');
+    }
     return userObj;
   };
 
@@ -139,6 +144,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const json = await res.json();
       const userObj = parseUserFromResponse(json?.data || json);
       setUser(userObj);
+      if (userObj?.id) {
+        syncAnonymousCartToUser(userObj.id);
+        dispatchCartUpdated('Cart synced');
+      }
     } catch (e) {
       console.error('Failed to load user', e);
       // Keep token intact on transient network/server errors.

@@ -5,6 +5,8 @@ import { loadStripe } from '@stripe/stripe-js';
 import { Smartphone, CreditCard, FileText, ShieldCheck, Lock } from 'lucide-react';
 import { Header } from '../components/Header';
 import { apiUrl } from '../lib/api';
+import { useAuth } from '../context/AuthContext';
+import { readCartItems, writeCartItems } from '../lib/cart';
 
 const stripePublishableKey = import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '';
 const stripePromise = stripePublishableKey ? loadStripe(stripePublishableKey) : null;
@@ -18,6 +20,19 @@ type CheckoutItem = {
 };
 
 type PaymentMethod = 'card' | 'paypal';
+
+type PayPalCheckoutContext = {
+  itemType: 'course' | 'note';
+  itemId: string;
+  couponCode: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  country: string;
+  paypalEmail: string;
+};
+
+const PAYPAL_CHECKOUT_CONTEXT_KEY = 'paypalCheckoutContext';
 
 const normalizeCouponCode = (code: string) => String(code || '').trim().toUpperCase();
 
@@ -126,6 +141,7 @@ export function CheckoutPage() {
 function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { user } = useAuth();
   const stripe = useStripe();
   const elements = useElements();
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('card');
@@ -149,6 +165,25 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
   const [paypalRedirecting, setPaypalRedirecting] = useState(false);
   const [capturingPaypal, setCapturingPaypal] = useState(false);
   const paypalToken = searchParams.get('token') || searchParams.get('paypalOrderId') || '';
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(PAYPAL_CHECKOUT_CONTEXT_KEY);
+      if (!raw) {
+        return;
+      }
+
+      const context = JSON.parse(raw) as Partial<PayPalCheckoutContext>;
+      if (context?.firstName) setFirstName(String(context.firstName || ''));
+      if (context?.lastName) setLastName(String(context.lastName || ''));
+      if (context?.email) setEmail(String(context.email || ''));
+      if (context?.country) setCountry(String(context.country || ''));
+      if (context?.paypalEmail) setPaypalEmail(String(context.paypalEmail || ''));
+      if (context?.couponCode) setCouponInput(String(context.couponCode || ''));
+    } catch {
+      sessionStorage.removeItem(PAYPAL_CHECKOUT_CONTEXT_KEY);
+    }
+  }, []);
 
   const generatedCoupon = useMemo(() => {
     if (itemData.itemType === 'course' && itemData.courseId) {
@@ -283,9 +318,17 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
 
   useEffect(() => {
     const capturePayPalOrder = async () => {
-      if (!paypalToken || capturingPaypal) {
+      if (!paypalToken || capturingPaypal || loadingProfile || serverPaypalEnabled === false) {
         return;
       }
+
+      const requiredDetails = {
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email: email.trim(),
+        country: country.trim(),
+        paypalEmail: paypalEmail.trim()
+      };
 
       try {
         setCapturingPaypal(true);
@@ -308,11 +351,7 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
             itemType: itemData.itemType,
             itemId: itemData.courseId || itemData.noteId || id,
             couponCode: appliedCouponCode || undefined,
-            firstName,
-            lastName,
-            email,
-            country,
-            paypalEmail
+            ...requiredDetails
           })
         });
 
@@ -338,6 +377,7 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
         };
 
         localStorage.setItem('lastOrder', JSON.stringify(order));
+        sessionStorage.removeItem(PAYPAL_CHECKOUT_CONTEXT_KEY);
         navigate('/order-success', { state: order, replace: true });
       } catch (error: any) {
         setPaymentError(error?.message || 'Failed to capture PayPal payment');
@@ -456,6 +496,19 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
     }
 
     if (paymentMethod === 'paypal') {
+      sessionStorage.setItem(
+        PAYPAL_CHECKOUT_CONTEXT_KEY,
+        JSON.stringify({
+          itemType: itemData.itemType,
+          itemId: itemData.courseId || itemData.noteId || id || '',
+          couponCode: appliedCouponCode || '',
+          firstName,
+          lastName,
+          email,
+          country,
+          paypalEmail
+        } satisfies PayPalCheckoutContext)
+      );
       await startPayPalCheckout();
       return;
     }
@@ -550,13 +603,12 @@ function CheckoutForm({ itemData, id, stripeDisabled = false }: CheckoutPageProp
       try {
         const purchasedType = String(json.data.itemType || itemData.itemType || '').trim() as 'course' | 'note';
         const purchasedId = String(json.data.itemId || itemData.courseId || itemData.noteId || id || '').trim();
-        const raw = localStorage.getItem('shoppingCart');
-        const current = raw ? JSON.parse(raw) : [];
+        const current = readCartItems(user?.id);
         const next = Array.isArray(current)
           ? current.filter((entry: any) => !(String(entry?.itemType) === purchasedType && String(entry?.id) === purchasedId))
           : [];
 
-        localStorage.setItem('shoppingCart', JSON.stringify(next));
+        writeCartItems(next, user?.id);
         window.dispatchEvent(new CustomEvent('cart-updated'));
       } catch {
         // Keep checkout success path resilient even if cart cleanup fails.

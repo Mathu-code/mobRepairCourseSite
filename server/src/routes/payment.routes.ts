@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { isValidObjectId } from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import Stripe from 'stripe';
@@ -151,6 +151,33 @@ const getPayPalApproveLink = (links: Array<{ rel?: string; href?: string }> = []
   return links.find((link) => link?.rel === 'approve')?.href || '';
 };
 
+const resolveFrontendUrl = (req: Request) => {
+  const rawCors = String(process.env.CORS_ORIGINS || '').trim();
+  const allowedOrigins = rawCors
+    ? rawCors.split(',').map((o) => String(o || '').trim().replace(/\/$/, '')).filter(Boolean)
+    : [frontendUrl];
+
+  const origin = String(req.headers.origin || '').trim().replace(/\/$/, '');
+  if (origin && allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  const referer = String(req.headers.referer || '').trim();
+  if (referer) {
+    try {
+      const parsedReferer = new URL(referer);
+      const refererOrigin = parsedReferer.origin.replace(/\/$/, '');
+      if (allowedOrigins.includes(refererOrigin)) {
+        return refererOrigin;
+      }
+    } catch {
+      // Fall back to the configured frontend URL below.
+    }
+  }
+
+  return frontendUrl;
+};
+
 const getPayPalOrderDetails = async (orderId: string, accessToken: string) => {
   const response = await fetch(`${paypalBaseUrl}/v2/checkout/orders/${String(orderId).trim()}`, {
     method: 'GET',
@@ -177,6 +204,20 @@ const getPayPalCaptureInfo = (orderDetails: any) => {
     captureId: String(capture?.id || '').trim(),
     amount: Number(amountValue || 0)
   };
+};
+
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+const getPayPalOrderDetailsWhenReady = async (orderId: string, accessToken: string) => {
+  const retryableStatuses = new Set(['', 'CREATED', 'SAVED']);
+  let orderDetails = await getPayPalOrderDetails(orderId, accessToken);
+
+  for (let attempt = 0; attempt < 2 && retryableStatuses.has(String(orderDetails?.status || '').toUpperCase()); attempt += 1) {
+    await sleep(500);
+    orderDetails = await getPayPalOrderDetails(orderId, accessToken);
+  }
+
+  return orderDetails;
 };
 
 const buildPayPalCaptureResponse = ({
@@ -239,14 +280,18 @@ router.post('/create-intent', authenticateToken, async (req: AuthRequest, res: R
       return res.status(400).json({ success: false, message: 'Invalid item type' });
     }
 
+    const typedCreateItemType = itemType as 'course' | 'note';
+
     if (!isValidObjectId(String(itemId || ''))) {
       return res.status(400).json({ success: false, message: 'Invalid item id' });
     }
 
-    const resolved = await resolveItem(itemType, itemId);
-    const discountInfo = resolveCourseDiscount(itemType, itemId, couponCode);
+    const resolved = await resolveItem(typedCreateItemType, itemId);
+    const discountInfo = resolveCourseDiscount(typedCreateItemType, itemId, couponCode);
     const discountedAmount = Number((resolved.amount * (1 - discountInfo.discountPercent / 100)).toFixed(2));
-    const amountInCents = Math.max(50, Math.round(discountedAmount * 100));
+    const tax = Number((discountedAmount * 0.1).toFixed(2));
+    const totalAmount = Number((discountedAmount + tax).toFixed(2));
+    const amountInCents = Math.max(50, Math.round(totalAmount * 100));
 
     if (itemType === 'course') {
       const existingEnrollment = await Enrollment.findOne({
@@ -286,7 +331,9 @@ router.post('/create-intent', authenticateToken, async (req: AuthRequest, res: R
       success: true,
       data: {
         clientSecret: paymentIntent.client_secret,
-        amount: discountedAmount,
+        amount: totalAmount,
+        subtotal: discountedAmount,
+        tax,
         currency: 'usd',
         discountPercent: discountInfo.discountPercent,
         couponCode: discountInfo.appliedCouponCode,
@@ -315,11 +362,15 @@ router.post('/paypal/create-order', authenticateToken, async (req: AuthRequest, 
       return res.status(400).json({ success: false, message: 'Invalid item id' });
     }
 
-    const resolved = await resolveItem(itemType, itemId);
-    const discountInfo = resolveCourseDiscount(itemType, itemId, couponCode);
+    const typedCreateItemType = itemType as 'course' | 'note';
+    const resolved = await resolveItem(typedCreateItemType, itemId);
+    const discountInfo = resolveCourseDiscount(typedCreateItemType, itemId, couponCode);
     const discountedAmount = Number((resolved.amount * (1 - discountInfo.discountPercent / 100)).toFixed(2));
+    const tax = Number((discountedAmount * 0.1).toFixed(2));
+    const totalAmount = Number((discountedAmount + tax).toFixed(2));
 
     const accessToken = await getPayPalAccessToken();
+    const returnUrlBase = resolveFrontendUrl(req);
     const response = await fetch(`${paypalBaseUrl}/v2/checkout/orders`, {
       method: 'POST',
       headers: {
@@ -335,15 +386,25 @@ router.post('/paypal/create-order', authenticateToken, async (req: AuthRequest, 
             custom_id: String(req.user!.userId),
             amount: {
               currency_code: 'USD',
-              value: discountedAmount.toFixed(2)
+              value: totalAmount.toFixed(2),
+              breakdown: {
+                item_total: {
+                  currency_code: 'USD',
+                  value: discountedAmount.toFixed(2)
+                },
+                tax_total: {
+                  currency_code: 'USD',
+                  value: tax.toFixed(2)
+                }
+              }
             }
           }
         ],
         application_context: {
           brand_name: 'MobRepairHouse',
           user_action: 'PAY_NOW',
-          return_url: `${frontendUrl}/checkout/${itemType}/${itemId}`,
-          cancel_url: `${frontendUrl}/checkout/${itemType}/${itemId}`
+          return_url: `${returnUrlBase}/checkout/${itemType}/${itemId}`,
+          cancel_url: `${returnUrlBase}/checkout/${itemType}/${itemId}`
         }
       })
     });
@@ -363,7 +424,9 @@ router.post('/paypal/create-order', authenticateToken, async (req: AuthRequest, 
       data: {
         orderId: json.id,
         approveUrl,
-        amount: discountedAmount,
+        amount: totalAmount,
+        subtotal: discountedAmount,
+        tax,
         currency: 'usd',
         discountPercent: discountInfo.discountPercent,
         couponCode: discountInfo.appliedCouponCode
@@ -377,35 +440,63 @@ router.post('/paypal/create-order', authenticateToken, async (req: AuthRequest, 
 
 router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
+    console.log('PayPal capture request body:', JSON.stringify(req.body || {}));
     if (!paypalReady) {
       return res.status(503).json({ success: false, message: 'PayPal is not configured on the server' });
     }
 
-    const { orderId, itemType, itemId, couponCode, firstName, lastName, email, country } = req.body || {};
+    const rawBody = req.body || {};
+    const {
+      orderId: bodyOrderId,
+      orderID: bodyOrderID,
+      token: bodyToken,
+      paypalOrderId: bodyPaypalOrderId,
+      itemType: bodyItemType,
+      itemId: bodyItemId,
+      itemID: bodyItemID,
+      couponCode,
+      firstName,
+      lastName,
+      email,
+      country
+    } = rawBody;
 
-    if (!String(orderId || '').trim()) {
+    const orderId = String(bodyOrderId || bodyOrderID || bodyToken || bodyPaypalOrderId || req.query?.token || req.query?.orderID || '').trim();
+    const itemType = String(bodyItemType || rawBody.itemType || '').trim();
+    const itemId = String(bodyItemId || bodyItemID || rawBody.itemId || rawBody.itemID || '').trim();
+
+    console.log('Resolved PayPal capture params:', { orderId, itemType, itemId });
+
+    if (!orderId) {
+      console.error('PayPal capture validation failed: missing orderId (received body)', rawBody);
       return res.status(400).json({ success: false, message: 'Missing PayPal order id' });
     }
 
     if (!['course', 'note'].includes(itemType)) {
+      console.error('PayPal capture validation failed: invalid itemType', { orderId, itemType, itemId });
       return res.status(400).json({ success: false, message: 'Invalid item type' });
     }
 
     if (!isValidObjectId(String(itemId || ''))) {
+      console.error('PayPal capture validation failed: invalid itemId (not ObjectId)', { orderId, itemType, itemId });
       return res.status(400).json({ success: false, message: 'Invalid item id' });
     }
 
-    const resolved = await resolveItem(itemType, itemId);
-    const discountInfo = resolveCourseDiscount(itemType, itemId, couponCode);
+    const typedItemType = itemType as 'course' | 'note';
+
+    const resolved = await resolveItem(typedItemType, itemId);
+    const discountInfo = resolveCourseDiscount(itemType as 'course' | 'note', itemId, couponCode);
     const amount = Number((resolved.amount * (1 - discountInfo.discountPercent / 100)).toFixed(2));
+    const tax = Number((amount * 0.1).toFixed(2));
+    const totalAmount = Number((amount + tax).toFixed(2));
     const orderIdValue = String(orderId).trim();
     const accessToken = await getPayPalAccessToken();
-    const orderDetails = await getPayPalOrderDetails(orderIdValue, accessToken);
+    const orderDetails = await getPayPalOrderDetailsWhenReady(orderIdValue, accessToken);
     const captureInfo = getPayPalCaptureInfo(orderDetails);
 
     const existingPurchase = await Purchase.findOne({
       userId: req.user!.userId,
-      itemType,
+      itemType: typedItemType,
       itemId,
       externalPaymentId: orderIdValue
     });
@@ -414,7 +505,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
       return res.json(
         buildPayPalCaptureResponse({
           purchase: existingPurchase,
-          itemType,
+          itemType: typedItemType,
           itemId,
           resolvedTitle: resolved.title,
           amount: existingPurchase.amount,
@@ -429,7 +520,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
     }
 
     if (captureInfo.status === 'COMPLETED') {
-      if (Math.abs(captureInfo.amount - amount) > 0.01) {
+      if (Math.abs(captureInfo.amount - totalAmount) > 0.01) {
         return res.status(400).json({ success: false, message: 'Payment amount mismatch' });
       }
 
@@ -437,7 +528,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
       const purchase = await Purchase.create({
         userId: req.user!.userId,
         instructorId: resolved.instructorId || null,
-        itemType,
+        itemType: typedItemType,
         itemId,
         amount,
         platformFee,
@@ -450,10 +541,10 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
         payoutStatus: 'eligible'
       });
 
-      return res.status(201).json(
+        return res.status(201).json(
         buildPayPalCaptureResponse({
           purchase,
-          itemType,
+          itemType: typedItemType,
           itemId,
           resolvedTitle: resolved.title,
           amount,
@@ -498,7 +589,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
         const purchase = await Purchase.create({
           userId: req.user!.userId,
           instructorId: resolved.instructorId || null,
-          itemType,
+          itemType: typedItemType,
           itemId,
           amount,
           platformFee,
@@ -514,7 +605,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
         return res.status(201).json(
           buildPayPalCaptureResponse({
             purchase,
-            itemType,
+            itemType: typedItemType,
             itemId,
             resolvedTitle: resolved.title,
             amount,
@@ -547,7 +638,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
     const purchase = await Purchase.create({
       userId: req.user!.userId,
       instructorId: resolved.instructorId || null,
-      itemType,
+      itemType: typedItemType,
       itemId,
       amount,
       platformFee,
@@ -563,7 +654,7 @@ router.post('/paypal/capture-order', authenticateToken, async (req: AuthRequest,
     res.status(201).json(
       buildPayPalCaptureResponse({
         purchase,
-        itemType,
+        itemType: typedItemType,
         itemId,
         resolvedTitle: resolved.title,
         amount,
@@ -599,6 +690,8 @@ router.post('/confirm', authenticateToken, async (req: AuthRequest, res: Respons
     if (!['course', 'note'].includes(itemType)) {
       return res.status(400).json({ success: false, message: 'Invalid item type' });
     }
+
+    const typedItemType = itemType as 'course' | 'note';
 
     if (!isValidObjectId(String(itemId || ''))) {
       return res.status(400).json({ success: false, message: 'Invalid item id' });
@@ -682,14 +775,16 @@ router.post('/confirm', authenticateToken, async (req: AuthRequest, res: Respons
       await item.save();
     }
 
-    const discountInfo = resolveCourseDiscount(itemType, itemId, couponCode);
+    const discountInfo = resolveCourseDiscount(typedItemType, itemId, couponCode);
     const amount = Number((baseAmount * (1 - discountInfo.discountPercent / 100)).toFixed(2));
+    const tax = Number((amount * 0.1).toFixed(2));
+    const totalAmount = Number((amount + tax).toFixed(2));
     const { platformFee, instructorEarnings } = calculatePayoutSplit(amount);
 
     if (paymentMethod === 'card' && stripe && paymentIntentId) {
       const paymentIntent = await stripe.paymentIntents.retrieve(String(paymentIntentId));
       const intentAmount = Number(paymentIntent.amount || 0) / 100;
-      if (Math.abs(intentAmount - amount) > 0.01) {
+      if (Math.abs(intentAmount - totalAmount) > 0.01) {
         return res.status(400).json({ success: false, message: 'Payment amount mismatch' });
       }
     }

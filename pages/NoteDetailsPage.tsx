@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { Header } from '../components/Header';
 import { Footer } from '../components/Footer';
 import { apiUrl } from '../lib/api';
+import { useAuth } from '../context/AuthContext';
+import { addCartItem, dispatchCartUpdated } from '../lib/cart';
 
 type NoteDetails = {
   id: string;
@@ -22,6 +24,7 @@ type NoteDetails = {
 
 export function NoteDetailsPage() {
   const { id } = useParams();
+  const { user } = useAuth();
   const [note, setNote] = useState<NoteDetails | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -118,22 +121,16 @@ export function NoteDetailsPage() {
     };
 
     try {
-      const raw = localStorage.getItem('shoppingCart');
-      const current = raw ? JSON.parse(raw) : [];
-      const existing = Array.isArray(current)
-        ? current.find((item: any) => item?.id === note.id && item?.itemType === 'note')
-        : null;
+      const added = addCartItem(cartItem, user?.id);
 
-      if (existing) {
-        window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Already in cart' } }));
+      if (!added) {
+        dispatchCartUpdated('Already in cart');
         return;
       }
 
-      const next = Array.isArray(current) ? [...current, cartItem] : [cartItem];
-      localStorage.setItem('shoppingCart', JSON.stringify(next));
-      window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Added to cart' } }));
+      dispatchCartUpdated('Added to cart');
     } catch {
-      window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Cart update failed' } }));
+      dispatchCartUpdated('Cart update failed');
     }
   };
 

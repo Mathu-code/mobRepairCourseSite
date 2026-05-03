@@ -7,6 +7,7 @@ import { Header } from '../components/Header';
 import { Footer } from '../components/Footer';
 import { apiUrl, resolveAssetUrl } from '../lib/api';
 import { useAuth } from '../context/AuthContext';
+import { addCartItem, dispatchCartUpdated } from '../lib/cart';
 
 type CourseDetails = {
   id: string;
@@ -172,22 +173,16 @@ export function CourseDetailsPage() {
     };
 
     try {
-      const raw = localStorage.getItem('shoppingCart');
-      const current = raw ? JSON.parse(raw) : [];
-      const existing = Array.isArray(current)
-        ? current.find((item: any) => item?.id === course.id && item?.itemType === 'course')
-        : null;
+      const added = addCartItem(cartItem, user?.id);
 
-      if (existing) {
-        window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Already in cart' } }));
+      if (!added) {
+        dispatchCartUpdated('Already in cart');
         return;
       }
 
-      const next = Array.isArray(current) ? [...current, cartItem] : [cartItem];
-      localStorage.setItem('shoppingCart', JSON.stringify(next));
-      window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Added to cart' } }));
+      dispatchCartUpdated('Added to cart');
     } catch {
-      window.dispatchEvent(new CustomEvent('cart-updated', { detail: { message: 'Cart update failed' } }));
+      dispatchCartUpdated('Cart update failed');
     }
   };
 
